@@ -1,8 +1,11 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+
 using TrayToolbar.Controls;
 using TrayToolbar.Extensions;
 using TrayToolbar.Models;
+using TrayToolbar.Services;
+
 using R = TrayToolbar.Resources.Resources;
 
 namespace TrayToolbar;
@@ -21,9 +24,9 @@ public partial class SettingsForm : Form
 
     internal bool NewVersionMessage = false;
 
-    private bool FirstTimeLoad = false;
+    private bool _firstTimeLoad = false;
 
-    private System.Threading.Timer? UpdateCheckTimer;
+    private System.Threading.Timer? _updateCheckTimer;
 
     internal readonly CultureInfo[] SupportedLanguages = [
         CultureInfo.GetCultureInfo("en"),
@@ -45,13 +48,13 @@ public partial class SettingsForm : Form
         PopulateConfig();
         LoadResources(Configuration.Language);
         HandleCreated += SettingsForm_HandleCreated;
-        if (ValidateFolderConfigurations() && !FirstTimeLoad)
+        if (ValidateFolderConfigurations() && !_firstTimeLoad)
         {
             CreateIcons();
         }
         else
         {
-            FirstTimeLoad = false;
+            _firstTimeLoad = false;
             ShowNormal();
         }
         SystemTheme.UseImmersiveDarkMode(0, UseDarkMode());
@@ -61,9 +64,8 @@ public partial class SettingsForm : Form
 
     private void SetupUpdateCheckTimer()
     {
-        NotificationsHelper.Activate();
         var interval = TimeSpan.FromMinutes(Configuration.UpdateCheckInterval);
-        UpdateCheckTimer = new System.Threading.Timer(
+        _updateCheckTimer = new System.Threading.Timer(
             callback: _ => CheckForUpdateAsync(),
             state: null,
             dueTime: interval,
@@ -75,10 +77,10 @@ public partial class SettingsForm : Form
     {
         ConfigHelper.CheckForUpdate().ContinueWith(r =>
         {
-            if (r.Result?.Name != null && r.Result.Name != "v" + ConfigHelper.ApplicationVersion)
+            if (UpdateLogic.TryGetAvailableUpdate(r.Result, ConfigHelper.ApplicationVersion, out var version, out var updateUrl))
             {
-                var prerelease = IsPrereleaseVersion(r.Result.Name[1..]);
-                ShowUpdateAvailable(r.Result.UpdateUrl, prerelease);
+                var prerelease = IsPrereleaseVersion(version);
+                ShowUpdateAvailable(updateUrl, prerelease);
             }
         });
     }
@@ -184,15 +186,14 @@ public partial class SettingsForm : Form
         NewVersionLabel.Text = prerelease
             ? R.You_are_using_a_prerelease_version
             : R.A_new_version_is_available;
-        var updateUrl = "https://github.com" + updateUri;
-        NewVersionLabel.Tag = updateUrl;
+        NewVersionLabel.Tag = updateUri;
         NewVersionLabel.Visible = true;
         UpdateNowLabel.Visible = !prerelease;
-        if (!prerelease && Configuration.NotifyOnUpdateAvailable)
+        if (!prerelease && Configuration.NotifyOnUpdateAvailable && ConfigHelper.SupportsToastNotifications)
         {
-            NotificationsHelper.Notify(R.A_new_version_is_available, updateUrl, R.Update_now, NotificationsHelper.UPDATE_ACTION);
-            UpdateCheckTimer?.Dispose();
-            UpdateCheckTimer = null;
+            NotificationsHelper.Notify(R.A_new_version_is_available, updateUri, R.Update_now, NotificationsHelper.UPDATE_ACTION);
+            _updateCheckTimer?.Dispose();
+            _updateCheckTimer = null;
         }
     }
 
@@ -379,7 +380,7 @@ public partial class SettingsForm : Form
         var i = 0;
         if (Configuration.Folders.Count == 0)
         {
-            FirstTimeLoad = true;
+            _firstTimeLoad = true;
             Configuration.Folders.Add(new FolderConfig { Recursive = true, Name = @"%APPDATA%\Microsoft\Windows\Start Menu" });
         }
         Configuration.Folders.ForEach(f => AddFolder(f, i++));
@@ -417,14 +418,7 @@ public partial class SettingsForm : Form
 
     static bool IsPrereleaseVersion(string version)
     {
-        try
-        {
-            return Version.Parse(ConfigHelper.ApplicationVersion).CompareTo(Version.Parse(version)) == 1;
-        }
-        catch
-        {
-            return false;
-        }
+        return UpdateLogic.IsPrereleaseVersion(ConfigHelper.ApplicationVersion, version);
     }
 
     private IEnumerable<FolderControl> FolderControls()
@@ -570,7 +564,7 @@ public partial class SettingsForm : Form
         }
         else
         {
-            UpdateCheckTimer?.Dispose();
+            _updateCheckTimer?.Dispose();
         }
     }
 
@@ -608,7 +602,6 @@ public partial class SettingsForm : Form
                 break;
             case Command_Exit:
                 Quit();
-                Application.Exit();
                 break;
         }
     }
@@ -706,7 +699,7 @@ public partial class SettingsForm : Form
         }
         if (error)
         {
-            MessageBox.Show(this, 
+            MessageBox.Show(this,
                 R.The_folder_value_must_be_set, R.Error,
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
@@ -718,8 +711,8 @@ public partial class SettingsForm : Form
         }
         if (error)
         {
-            MessageBox.Show(this, 
-                R.The_folder_does_not_exist, R.Error, 
+            MessageBox.Show(this,
+                R.The_folder_does_not_exist, R.Error,
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
         }
@@ -830,7 +823,7 @@ public partial class SettingsForm : Form
         if (NewVersionMessage)
         {
             NewVersionMessage = false;
-            MessageBox.Show(this, 
+            MessageBox.Show(this,
                 string.Format(R.Updated_to_version, ConfigHelper.ApplicationVersion),
                 R.Update_TrayToolbar, MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
@@ -855,9 +848,9 @@ public partial class SettingsForm : Form
 
     private void UpdateNowLabel_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
     {
-        var result = MessageBox.Show(this, 
-            R.Are_you_sure_you_want_to_update_to_the_latest_version, 
-            R.Update_TrayToolbar, 
+        var result = MessageBox.Show(this,
+            R.Are_you_sure_you_want_to_update_to_the_latest_version,
+            R.Update_TrayToolbar,
             MessageBoxButtons.YesNo, MessageBoxIcon.Question);
         if (result == DialogResult.Yes)
         {

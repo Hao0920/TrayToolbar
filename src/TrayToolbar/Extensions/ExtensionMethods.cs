@@ -1,6 +1,6 @@
-﻿using IWshRuntimeLibrary;
-using System.Diagnostics.CodeAnalysis;
+﻿using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
+using System.Runtime.Versioning;
 using System.Text.RegularExpressions;
 
 namespace TrayToolbar.Extensions;
@@ -108,13 +108,25 @@ public static class ExtensionMethods
         return value;
     }
 
+    [SupportedOSPlatform("windows")]
     public static string ResolveShortcutTarget(this string shortcutPath)
     {
         try
         {
-            var shell = new WshShell();
-            var link = (IWshShortcut)shell.CreateShortcut(shortcutPath);
-            return link.TargetPath;
+            var shellType = Type.GetTypeFromProgID("WScript.Shell");
+            if (shellType == null)
+            {
+                return shortcutPath;
+            }
+
+            dynamic? shell = Activator.CreateInstance(shellType);
+            if (shell == null)
+            {
+                return shortcutPath;
+            }
+
+            dynamic? shortcut = shell.CreateShortcut(shortcutPath);
+            return (string?)shortcut?.TargetPath ?? shortcutPath;
         }
         catch { }
         return shortcutPath;
